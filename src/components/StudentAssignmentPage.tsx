@@ -9,24 +9,35 @@ import {
   Divider,
   CircularProgress,
   styled,
+  Alert,
+  Grid,
 } from '@mui/material';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowBack, InsertDriveFile, CloudUpload } from '@mui/icons-material';
+import {
+  ArrowBack,
+  InsertDriveFile,
+  CloudUpload,
+  Grade,
+  Comment,
+} from '@mui/icons-material';
 
 interface AssignmentDetailDto {
   id: number;
   courseId: number;
   title: string;
   description: string;
-  dueDate: string;
+  dueDate: string | null | undefined;
   fileUrl?: string | null;
-  teacherId?: number;
+
+  // Submission details (null if not submitted)
+  submissionId?: number | null;
   grade?: number | null;
   submissionText?: string | null;
   submissionFileUrl?: string | null;
-  feedback?: string | null;
   submittedAt?: string | null;
   gradedAt?: string | null;
+  comments?: string | null;
+  status?: 'SUBMITTED' | 'GRADED'; // Only these two statuses exist for submissions
 }
 
 const VisuallyHiddenInput = styled('input')({
@@ -51,174 +62,242 @@ const StudentAssignmentPage: React.FC = () => {
   const [assignment, setAssignment] = useState<AssignmentDetailDto | null>(
     null
   );
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  const API_BASE_URL = 'http://localhost:8081';
+
+  const getFullFileUrl = (url?: string | null): string | null => {
+    if (!url) return null;
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      return url;
+    }
+    return `${API_BASE_URL}${url.startsWith('/') ? url : '/' + url}`;
+  };
 
   const fetchAssignmentDetails = async (): Promise<AssignmentDetailDto> => {
     const token = localStorage.getItem('token');
+    if (!token) {
+      throw new Error('Authentication token missing.');
+    }
     const response = await fetch(
       `/api/assignments/getAssignmentById/${assignmentId}`,
       {
-        method: 'GET',
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: 'application/json',
         },
       }
     );
+    if (!response.ok) {
+      const errorText = await response
+        .text()
+        .catch(() => 'Unknown fetch error');
+      throw new Error(
+        `Failed to fetch assignment details (${response.status}): ${errorText}`
+      );
+    }
     return await response.json();
   };
 
   useEffect(() => {
     const loadAssignment = async () => {
       if (!courseId || !assignmentId) {
-        setError('Course or Assignment ID missing from URL.');
+        setError('Missing course or assignment ID.');
         setLoading(false);
         return;
       }
 
-      const parsedCourseId = Number(courseId);
-      const parsedAssignmentId = Number(assignmentId);
-      if (isNaN(parsedCourseId) || isNaN(parsedAssignmentId)) {
-        setError('Invalid Course or Assignment ID in URL.');
+      const token = localStorage.getItem('token');
+      if (!token) {
+        setError('Authentication token not found. Please log in.');
         setLoading(false);
         return;
       }
-
-      setLoading(true);
-      setError(null);
 
       try {
-        const token = localStorage.getItem('token');
-        if (!token) {
-          setError('Authentication token not found. Please log in.');
-          setLoading(false);
-          return;
-        }
-
         const data = await fetchAssignmentDetails();
         setAssignment(data);
       } catch (err: any) {
-        console.error('Error fetching assignment:', err);
         setError(`Failed to load assignment: ${err.message}`);
+        console.error('Failed to load assignment:', err);
+        setAssignment(null);
       } finally {
         setLoading(false);
       }
     };
 
     loadAssignment();
-  }, [assignmentId, courseId]);
+  }, [courseId, assignmentId]);
 
-  const handleBackToCourse = () => {
-    navigate(`/course/${courseId}`);
-  };
+  useEffect(() => {
+    if (successMessage) {
+      const timer = setTimeout(() => {
+        setSuccessMessage(null);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMessage]);
+
+  const handleBackToCourse = () => navigate(`/course/${courseId}`);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files && event.target.files.length > 0) {
-      const file = event.target.files[0];
-      const MAX_FILE_SIZE = 10 * 1024 * 1024;
+    setSubmitError(null);
+    setSuccessMessage(null);
+    setSelectedFile(null);
 
-      if (file.size > MAX_FILE_SIZE) {
-        setSubmitError(
-          `File size exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`
-        );
+    if (event.target.files?.length) {
+      const file = event.target.files[0];
+      const MAX_SIZE = 10 * 1024 * 1024;
+
+      if (file.size > MAX_SIZE) {
+        setSubmitError('File too large (limit 10MB).');
+        const fileInput = event.target as HTMLInputElement;
+        if (fileInput) fileInput.value = '';
         return;
       }
 
       setSelectedFile(file);
-      setSubmitError(null);
     }
   };
 
   const handleSubmitAssignment = async () => {
-    if (!selectedFile || !assignment) {
-      setSubmitError('Please select a file to upload');
+    if (!selectedFile || !assignment || !assignment.id) {
+      setSubmitError('Select a file and ensure assignment details are loaded.');
       return;
     }
 
     setIsSubmitting(true);
     setSubmitError(null);
+    setSuccessMessage(null);
+
     const token = localStorage.getItem('token');
+    if (!token) {
+      setSubmitError('Authentication token not found. Please log in.');
+      setIsSubmitting(false);
+      return;
+    }
 
     try {
       const formData = new FormData();
       formData.append('file', selectedFile);
 
-      const uploadResponse = await fetch(
-        'http://localhost:8081/api/files/upload',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          body: formData,
-        }
-      );
+      const uploadRes = await fetch(`${API_BASE_URL}/api/files/upload`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
 
-      if (!uploadResponse.ok) {
-        throw new Error((await uploadResponse.text()) || 'File upload failed');
-      }
-
-      const fileUrl = await uploadResponse.text();
-
-      const submissionResponse = await fetch(
-        'http://localhost:8081/api/submissions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            assignmentId: assignment.id,
-            fileUrl: fileUrl,
-          }),
-        }
-      );
-
-      if (!submissionResponse.ok) {
+      if (!uploadRes.ok) {
+        const errorText = await uploadRes
+          .text()
+          .catch(() => 'Unknown upload error');
         throw new Error(
-          (await submissionResponse.text()) || 'Submission creation failed'
+          `File upload failed (${uploadRes.status}): ${errorText}`
         );
       }
 
-      const updatedAssignment = await fetchAssignmentDetails();
-      setAssignment(updatedAssignment);
+      const fileUrl = await uploadRes.text();
+
+      const submitRes = await fetch(`${API_BASE_URL}/api/submissions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          assignmentId: assignment.id,
+          fileUrl: fileUrl,
+        }),
+      });
+
+      if (!submitRes.ok) {
+        const errorText = await submitRes
+          .text()
+          .catch(() => 'Unknown submission error');
+        if (submitRes.status === 400) {
+          setSubmitError('The submission is already sent.');
+          return;
+        }
+        throw new Error(
+          `Assignment submission failed (${submitRes.status}): ${errorText}`
+        );
+      }
+
+      try {
+        const updated = await fetchAssignmentDetails();
+        setAssignment(updated);
+        setSuccessMessage('Assignment submitted successfully!');
+      } catch (refetchErr: any) {
+        console.error('Failed to refetch assignment:', refetchErr);
+        setSuccessMessage(
+          'Submission successful! Please refresh for updated details.'
+        );
+      }
+
       setSelectedFile(null);
+      const fileInput = document.querySelector(
+        '#file-upload-button input[type="file"]'
+      ) as HTMLInputElement;
+      if (fileInput) fileInput.value = '';
     } catch (err: any) {
-      console.error('Submission error:', err);
-      setSubmitError(err.message || 'Submission failed. Please try again.');
+      console.error('Submission failed:', err);
+      setSubmitError(err.message || 'An unexpected error occurred.');
+      setSuccessMessage(null);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const formatDateTime = (dateString: string): string => {
+  const formatDueDate = (dateString: string | null | undefined): string => {
+    if (!dateString) return 'No due date';
     try {
       const date = new Date(dateString);
+      if (isNaN(date.getTime())) return dateString;
+      return date.toLocaleString([], {
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch (e) {
+      console.error('Error formatting date:', e);
+      return dateString;
+    }
+  };
+
+  const formatDateTime = (dateString: string | null | undefined): string => {
+    if (!dateString) return 'N/A';
+    try {
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) return dateString;
       return date.toLocaleString('en-US', {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
         minute: '2-digit',
-        hour12: true,
       });
     } catch (e) {
+      console.error('Error formatting date:', e);
       return dateString;
     }
   };
 
-  const computeStatus = (assignment: AssignmentDetailDto): string => {
-    if (assignment.gradedAt) return 'Graded';
-    if (assignment.submittedAt) return 'Submitted';
-    return 'Not Submitted';
+  // Determines if submission exists and its status
+  const getSubmissionStatus = (
+    assignment: AssignmentDetailDto
+  ): 'NOT_SUBMITTED' | 'SUBMITTED' | 'GRADED' => {
+    if (!assignment.submissionId) return 'NOT_SUBMITTED';
+    return assignment.status === 'GRADED' ? 'GRADED' : 'SUBMITTED';
   };
 
-  if (loading) {
+  if (loading)
     return (
       <Box
         display='flex'
@@ -227,30 +306,20 @@ const StudentAssignmentPage: React.FC = () => {
         minHeight='200px'
       >
         <CircularProgress />
-        <Typography sx={{ ml: 2 }}>Loading assignment details...</Typography>
+        <Typography ml={2}>Loading assignment...</Typography>
       </Box>
     );
-  }
 
-  if (error) return <Typography color='error'>{error}</Typography>;
-  if (!assignment)
-    return <Typography>Assignment not found or failed to load.</Typography>;
+  if (error) return <Typography color='error'>Error: {error}</Typography>;
+  if (!assignment) return <Typography>Assignment data not found.</Typography>;
 
-  const status = computeStatus(assignment);
-  const servableAssignmentFileUrl = assignment.fileUrl
-    ? assignment.fileUrl.startsWith('/')
-      ? `http://localhost:8081${assignment.fileUrl}`
-      : `http://localhost:8081/${assignment.fileUrl}`
-    : null;
-
-  const servableSubmissionFileUrl = assignment.submissionFileUrl
-    ? assignment.submissionFileUrl.startsWith('/')
-      ? `http://localhost:8081${assignment.submissionFileUrl}`
-      : `http://localhost:8081/${assignment.submissionFileUrl}`
-    : null;
+  const submissionStatus = getSubmissionStatus(assignment);
+  const assignmentFileUrl = getFullFileUrl(assignment.fileUrl);
+  const submissionFileUrl = getFullFileUrl(assignment.submissionFileUrl);
+  const isSubmissionEditable = submissionStatus === 'NOT_SUBMITTED';
 
   return (
-    <Box sx={{ maxWidth: 900, margin: 'auto' }}>
+    <Box sx={{ maxWidth: 900, mx: 'auto' }}>
       <Button
         startIcon={<ArrowBack />}
         onClick={handleBackToCourse}
@@ -263,61 +332,98 @@ const StudentAssignmentPage: React.FC = () => {
         {assignment.title}
       </Typography>
 
-      <Box display='flex' alignItems='center' mb={2} flexWrap='wrap'>
+      <Box display='flex' flexWrap='wrap' alignItems='center' mb={2} gap={1}>
         <Chip
-          label={`Status: ${status}`}
+          label={`Status: ${submissionStatus.replace('_', ' ')}`}
           color={
-            status === 'Graded'
+            submissionStatus === 'GRADED'
               ? 'success'
-              : status === 'Submitted'
+              : submissionStatus === 'SUBMITTED'
               ? 'info'
               : 'default'
           }
-          sx={{ mr: 1, mb: 1 }}
         />
-        <Typography variant='subtitle1' color='text.secondary' sx={{ mr: 2 }}>
-          Due Date: {formatDateTime(assignment.dueDate)}
+        <Typography variant='subtitle1' color='text.secondary'>
+          Due: {formatDueDate(assignment.dueDate)}
         </Typography>
-        {assignment.submittedAt && (
+        {submissionStatus !== 'NOT_SUBMITTED' && (
           <Chip
             label={`Submitted: ${formatDateTime(assignment.submittedAt)}`}
             color='info'
-            sx={{ mr: 1 }}
           />
         )}
-        {assignment.gradedAt && (
-          <Chip
-            label={`Graded: ${formatDateTime(assignment.gradedAt)}`}
-            color='success'
-            sx={{ mr: 1 }}
-          />
+        {submissionStatus === 'GRADED' && (
+          <>
+            <Chip
+              label={`Graded: ${formatDateTime(assignment.gradedAt)}`}
+              color='success'
+            />
+            <Chip
+              label={`Grade: ${
+                assignment.grade !== null ? `${assignment.grade}%` : 'N/A'
+              }`}
+              color='primary'
+            />
+          </>
         )}
-        {assignment.gradedAt &&
-          (assignment.grade !== null ? (
-            <Chip label={`Grade: ${assignment.grade}%`} color='primary' />
-          ) : (
-            <Chip label='Ungraded' color='warning' />
-          ))}
       </Box>
+
+      {submissionStatus === 'GRADED' && (
+        <Paper
+          elevation={3}
+          sx={{ p: 3, mb: 3, borderColor: 'success.main', border: '1px solid' }}
+        >
+          <Typography variant='h6' gutterBottom color='success.dark'>
+            <Grade sx={{ verticalAlign: 'middle', mr: 1 }} />
+            Grading Results
+          </Typography>
+
+          <Grid container spacing={2}>
+            <Grid item xs={12} sm={6}>
+              <Typography variant='subtitle1'>
+                <strong>Grade:</strong>{' '}
+                {assignment.grade !== null
+                  ? `${assignment.grade}%`
+                  : 'Not graded'}
+              </Typography>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <Typography variant='subtitle1'>
+                <strong>Graded on:</strong>{' '}
+                {formatDateTime(assignment.gradedAt)}
+              </Typography>
+            </Grid>
+            <Grid item xs={12}>
+              <Typography variant='subtitle1'>
+                <Comment sx={{ verticalAlign: 'middle', mr: 1 }} />
+                <strong>Feedback:</strong>
+              </Typography>
+              <Typography
+                sx={{ fontStyle: 'italic', whiteSpace: 'pre-wrap', mt: 1 }}
+              >
+                {assignment.comments?.trim() || 'No feedback provided.'}
+              </Typography>
+            </Grid>
+          </Grid>
+        </Paper>
+      )}
 
       <Paper elevation={3} sx={{ p: 3, mb: 3 }}>
         <Typography variant='h6' gutterBottom>
           Description
         </Typography>
-        <Typography variant='body1' paragraph>
-          {assignment.description || 'No description provided.'}
+        <Typography sx={{ whiteSpace: 'pre-wrap' }}>
+          {assignment.description || 'No description available.'}
         </Typography>
 
-        {servableAssignmentFileUrl && (
+        {assignmentFileUrl && (
           <>
             <Divider sx={{ my: 2 }} />
-            <Typography variant='h6' gutterBottom>
-              Assignment File
-            </Typography>
+            <Typography variant='h6'>Assignment File</Typography>
             <Button
               variant='outlined'
               startIcon={<InsertDriveFile />}
-              href={servableAssignmentFileUrl}
+              href={assignmentFileUrl}
               target='_blank'
               rel='noopener noreferrer'
             >
@@ -326,102 +432,109 @@ const StudentAssignmentPage: React.FC = () => {
           </>
         )}
 
-        {(assignment.submissionText || assignment.submissionFileUrl) && (
+        {submissionStatus !== 'NOT_SUBMITTED' && (
           <>
             <Divider sx={{ my: 2 }} />
-            <Typography variant='h6' gutterBottom>
-              Your Submission
-            </Typography>
+            <Typography variant='h6'>Your Submission</Typography>
             {assignment.submissionText && (
-              <Typography
-                variant='body2'
-                sx={{ whiteSpace: 'pre-wrap', mb: 1 }}
-              >
+              <Typography sx={{ whiteSpace: 'pre-wrap' }}>
                 {assignment.submissionText}
               </Typography>
             )}
-            {servableSubmissionFileUrl && (
+            {submissionFileUrl && (
               <Button
                 variant='outlined'
                 startIcon={<InsertDriveFile />}
-                href={servableSubmissionFileUrl}
+                href={submissionFileUrl}
                 target='_blank'
                 rel='noopener noreferrer'
+                sx={{ mt: 1 }}
               >
                 View Submitted File
               </Button>
             )}
-          </>
-        )}
-
-        {assignment.feedback && (
-          <>
-            <Divider sx={{ my: 2 }} />
-            <Typography variant='h6' gutterBottom>
-              Teacher Feedback
-            </Typography>
-            <Typography variant='body2' sx={{ fontStyle: 'italic' }}>
-              {assignment.feedback}
-            </Typography>
+            {!assignment.submissionText && !submissionFileUrl && (
+              <Typography color='text.secondary'>
+                (Submission recorded but no content available)
+              </Typography>
+            )}
           </>
         )}
 
         <Divider sx={{ my: 2 }} />
-        <Typography variant='h6' gutterBottom>
-          Submit Your Work
-        </Typography>
+        <Typography variant='h6'>Submit Your Work</Typography>
 
-        {status === 'Not Submitted' ? (
+        {isSubmissionEditable ? (
           <>
             <Button
               component='label'
               variant='contained'
               startIcon={<CloudUpload />}
-              sx={{ mr: 2 }}
+              sx={{ mt: 2 }}
               disabled={isSubmitting}
+              id='file-upload-button'
             >
               Select File
               <VisuallyHiddenInput
                 type='file'
-                onChange={handleFileChange}
                 accept='.pdf,.doc,.docx,.txt,.zip,.pptx,.xlsx,.jpg,.png'
+                onChange={handleFileChange}
               />
             </Button>
 
             {selectedFile && (
-              <Typography variant='body2' sx={{ mt: 1 }}>
+              <Typography sx={{ mt: 1 }}>
                 Selected: {selectedFile.name} (
                 {Math.round(selectedFile.size / 1024)} KB)
               </Typography>
             )}
 
-            {selectedFile && (
-              <Box sx={{ mt: 2 }}>
-                <Button
-                  variant='contained'
-                  color='primary'
-                  onClick={handleSubmitAssignment}
-                  disabled={isSubmitting}
-                  startIcon={
-                    isSubmitting ? <CircularProgress size={20} /> : null
-                  }
-                >
-                  {isSubmitting ? 'Submitting...' : 'Submit Assignment'}
-                </Button>
+            {(selectedFile || submitError || successMessage) && (
+              <Box
+                mt={2}
+                display='flex'
+                alignItems='center'
+                flexWrap='wrap'
+                gap={2}
+              >
+                {selectedFile && (
+                  <Button
+                    variant='contained'
+                    onClick={handleSubmitAssignment}
+                    disabled={isSubmitting}
+                    startIcon={
+                      isSubmitting ? <CircularProgress size={20} /> : undefined
+                    }
+                  >
+                    {isSubmitting ? 'Submitting...' : 'Submit Assignment'}
+                  </Button>
+                )}
+
+                {submitError && (
+                  <Alert severity='error' sx={{ flexGrow: 1 }}>
+                    {submitError}
+                  </Alert>
+                )}
+
+                {successMessage && (
+                  <Alert severity='success' sx={{ flexGrow: 1 }}>
+                    {successMessage}
+                  </Alert>
+                )}
               </Box>
             )}
 
-            {submitError && (
+            {submitError && !selectedFile && (
               <Typography color='error' sx={{ mt: 1 }}>
                 {submitError}
               </Typography>
             )}
           </>
         ) : (
-          <Typography color='text.secondary'>
-            {status === 'Submitted'
-              ? 'You have already submitted this assignment.'
-              : 'This assignment has been graded.'}
+          <Typography color='text.secondary' sx={{ mt: 1 }}>
+            {submissionStatus === 'SUBMITTED'
+              ? 'Your submission has been received and is awaiting grading.'
+              : 'This assignment has been graded. No further submissions allowed.'}
           </Typography>
         )}
       </Paper>

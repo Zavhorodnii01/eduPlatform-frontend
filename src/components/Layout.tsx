@@ -46,7 +46,7 @@ const Layout: React.FC<LayoutProps> = ({ role, email, handleLogout }) => {
 
         <Button
           variant='contained'
-          color='secondary'
+          color='primary'
           onClick={handleLogout}
           sx={{ mt: 2, width: '100%' }}
         >

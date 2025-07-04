@@ -65,7 +65,56 @@ const Home: React.FC<HomeProps> = ({ role, userId }) => {
           throw new Error(errorText || 'Failed to fetch courses');
         }
 
-        const data: CourseDto[] = await response.json();
+        let data: CourseDto[] = await response.json();
+
+        if (role === 'TEACHER') {
+          // Для учителя: получаем количество студентов и заданий
+          const coursesWithCounts = await Promise.all(
+            data.map(async (course) => {
+              try {
+                const [studentsRes, assignmentsRes] = await Promise.all([
+                  fetch(`/api/courses/getTheNumberOfStudents/${course.id}`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                  }),
+                  fetch(`/api/courses/getTheNumberOfAssignments/${course.id}`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                  }),
+                ]);
+
+                if (!studentsRes.ok || !assignmentsRes.ok) throw new Error();
+
+                const studentCount = await studentsRes.json();
+                const assignmentCount = await assignmentsRes.json();
+
+                return { ...course, studentCount, assignmentCount };
+              } catch {
+                return { ...course, studentCount: 0, assignmentCount: 0 };
+              }
+            })
+          );
+          data = coursesWithCounts;
+        } else if (role === 'STUDENT') {
+          // Для студента: только количество заданий
+          const coursesWithAssignmentCounts = await Promise.all(
+            data.map(async (course) => {
+              try {
+                const assignmentRes = await fetch(
+                  `/api/courses/getTheNumberOfAssignments/${course.id}`,
+                  {
+                    headers: { Authorization: `Bearer ${token}` },
+                  }
+                );
+                if (!assignmentRes.ok) throw new Error();
+                const assignmentCount = await assignmentRes.json();
+                return { ...course, assignmentCount };
+              } catch {
+                return { ...course, assignmentCount: 0 };
+              }
+            })
+          );
+          data = coursesWithAssignmentCounts;
+        }
+
         setCourses(data);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load courses');

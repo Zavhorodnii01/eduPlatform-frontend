@@ -10,8 +10,12 @@ import Home from './components/Home';
 import StudentCoursePage from './components/StudentCoursePage';
 import TeacherCoursePage from './components/TeacherCoursePage';
 import StudentAssignmentPage from './components/StudentAssignmentPage';
-import TeacherAssignmentPage from './components/TeacherAssignmentPage';
+import TeacherAssignmentPage from './components/TeacherAssignmentPage'; // For viewing submissions list
 import SubmissionGradingPage from './components/SubmissionGradingPage';
+// Import CreateAssignmentPage directly
+import CreateAssignmentPage from './components/CreateAssignmentPage'; // <-- Import the component directly
+// Remove import for TeacherOnlyCreateAssignmentPage if you had it
+
 import Layout from './components/Layout';
 import { jwtDecode } from 'jwt-decode';
 import { Typography, Box, CircularProgress } from '@mui/material';
@@ -138,8 +142,9 @@ const App: React.FC = () => {
             </ProtectedRoute>
           }
         >
+          {/* Nested routes within the Layout */}
           <Route
-            index
+            index // This is the default route for '/'
             element={
               <Home
                 role={user?.role || 'STUDENT'}
@@ -148,7 +153,7 @@ const App: React.FC = () => {
             }
           />
           <Route
-            path='/course/:courseId'
+            path='course/:courseId'
             element={
               user?.role === 'TEACHER' ? (
                 <TeacherCoursePage />
@@ -157,25 +162,65 @@ const App: React.FC = () => {
               )
             }
           />
+
+          {/* Route for creating assignment */}
+          {/* Pass the userRole down to the CreateAssignmentPage */}
+          <Route
+            path='course/:courseId/create-assignment' // <-- This path
+            // Render CreateAssignmentPage directly and pass userRole
+            element={<CreateAssignmentPage userRole={user?.role || null} />} // <-- Pass userRole here
+          />
+
+          {/* Student Assignment View */}
           <Route
             path='course/:courseId/assignment/:assignmentId'
             element={
               user?.role === 'TEACHER' ? (
+                // Teachers go to submissions relative to the current route
                 <Navigate to={`submissions`} replace />
               ) : (
-                <StudentAssignmentPage />
+                <StudentAssignmentPage /> // Students go to assignment view
               )
             }
           />
-          {/* New teacher-specific routes */}
+
+          {/* Teacher-specific assignment routes (Submissions List and Grading) */}
+          {/* These routes might still benefit from passing userRole or having internal checks
+             if they are strictly teacher-only, but the initial error is resolved
+             by passing userRole to CreateAssignmentPage.
+             Let's keep the existing checks/redirects in these routes for now.
+          */}
           <Route
             path='course/:courseId/assignment/:assignmentId/submissions'
-            element={<TeacherAssignmentPage />}
+            element={
+              user?.role === 'TEACHER' ? (
+                <TeacherAssignmentPage /> // Teacher views submissions
+              ) : (
+                // Redirect non-teachers away
+                <Navigate
+                  to={`/course/:courseId/assignment/:assignmentId`}
+                  replace
+                />
+              )
+            }
           />
           <Route
             path='course/:courseId/assignment/:assignmentId/submission/:submissionId'
-            element={<SubmissionGradingPage />}
+            element={
+              user?.role === 'TEACHER' ? (
+                <SubmissionGradingPage /> // Teacher views/grades a specific submission
+              ) : (
+                // Redirect non-teachers away
+                <Navigate
+                  to={`/course/:courseId/assignment/:assignmentId`}
+                  replace
+                />
+              )
+            }
           />
+
+          {/* Catch-all for routes UNDER / that don't match (e.g., /some-bad-path) */}
+          {/* This should be the last route within the Layout */}
           <Route
             path='*'
             element={
@@ -189,6 +234,7 @@ const App: React.FC = () => {
           />
         </Route>
 
+        {/* Catch-all for routes OUTSIDE / (e.g., /login/extra or /another-bad-path) */}
         <Route
           path='*'
           element={
